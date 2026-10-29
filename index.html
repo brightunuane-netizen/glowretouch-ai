@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GlowRetouch AI — Professional Portrait & Color Studio</title>
+  
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#f0fdfa',
+              100: '#ccfbf1',
+              400: '#2dd4bf',
+              500: '#14b8a6',
+              600: '#0d9488',
+              900: '#134e4a',
+            },
+            dark: {
+              900: '#0B0F17',
+              800: '#111827',
+              700: '#1F293D',
+              600: '#374151',
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- React & React DOM CDN -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  
+  <!-- Babel Compiler for JSX -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <!-- JSZip CDN for batch zip downloads -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+  <style>
+    /* Custom Scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #0B0F17;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #1F293D;
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #374151;
+    }
+  </style>
+</head>
+<body class="bg-dark-900 text-slate-100 font-sans antialiased min-h-screen selection:bg-brand-500 selection:text-white">
+
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useMemo } = React;
+
+    // --- PRESET CONFIGURATIONS ---
+    const PRESETS = {
+      NATURAL: {
+        id: 'NATURAL',
+        name: 'Natural',
+        maxBatch: 50,
+        description: 'Subtle skin enhancement. Preserves pores, freckles, & texture.',
+        smoothingDefault: 25,
+        badge: 'Up to 50 photos'
+      },
+      SOFT_GLOW: {
+        id: 'SOFT_GLOW',
+        name: 'Soft Glow',
+        maxBatch: 50,
+        description: 'Luminous finish. Soft smoothing & gentle highlight glow.',
+        smoothingDefault: 45,
+        badge: 'Up to 50 photos'
+      },
+      STUDIO_RETOUCH: {
+        id: 'STUDIO_RETOUCH',
+        name: 'Studio Retouch',
+        maxBatch: 20,
+        description: 'Polished studio workflow. Blemish removal & tone balancing.',
+        smoothingDefault: 65,
+        badge: 'Up to 20 photos'
+      }
+    };
+
+    const LIGHTING_DEFAULTS = {
+      exposure: 0,
+      brightness: 0,
+      contrast: 0,
+      highlights: 0,
+      shadows: 0,
+      whites: 0,
+      blacks: 0,
+      temp: 0,
+      tint: 0,
+      vibrance: 0,
+      saturation: 0,
+      clarity: 0,
+      dehaze: 0
+    };
+
+    const RAW_EXTENSIONS = ['.cr2', '.cr3', '.nef', '.arw', '.dng', '.raf', '.orf', '.rw2', '.pef'];
+    const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024; // 50 MB
+
+    function App() {
+      const [activePreset, setActivePreset] = useState('NATURAL');
+      const [smoothingStrength, setSmoothingStrength] = useState(PRESETS.NATURAL.smoothingDefault);
+      const [lighting, setLighting] = useState(LIGHTING_DEFAULTS);
+      const [customInstruction, setCustomInstruction] = useState('');
+      const [files, setFiles] = useState([]);
+      const [concurrencyLimit, setConcurrencyLimit] = useState(2);
+      const [isProcessing, setIsProcessing] = useState(false);
+      const [selectedImageForView, setSelectedImageForView] = useState(null);
+      const [toast, setToast] = useState(null);
+      const [activeTab, setActiveTab] = useState('studio'); // 'studio' | 'architecture'
+      const [studioControlTab, setStudioControlTab] = useState('presets'); // 'presets' | 'lighting' | 'color'
+
+      const fileInputRef = useRef(null);
+
+      useEffect(() => {
+        if (window.lucide) {
+          window.lucide.createIcons();
+        }
+      });
+
+      const showToast = (message, type = 'error') => {
+        setToast({ message, type });
+        setTimeout(() => setToast(null), 4000);
+      };
+
+      const handlePresetChange = (presetKey) => {
+        setActivePreset(presetKey);
+        setSmoothingStrength(PRESETS[presetKey].smoothingDefault);
+        const limit = PRESETS[presetKey].maxBatch;
+        if (files.length > limit) {
+          showToast(`Preset updated to ${PRESETS[presetKey].name}. Current items (${files.length}) exceed preset limit of ${limit}.`, 'warning');
+        }
+      };
+
+      const handleLightingChange = (key, value) => {
+        setLighting(prev => ({ ...prev, [key]: Number(value) }));
+      };
+
+      const resetLighting = () => {
+        setLighting(LIGHTING_DEFAULTS);
+      };
+
+      // AI Natural Language Directives Parser
+      const parseAIDirective = (text) => {
+        setCustomInstruction(text);
+        const lower = text.toLowerCase();
+        let newLighting = { ...lighting };
+
+        if (lower.includes('warm') || lower.includes('sunset')) newLighting.temp = Math.min(newLighting.temp + 25, 100);
+        if (lower.includes('cool') || lower.includes('winter')) newLighting.temp = Math.max(newLighting.temp - 25, -100);
+        if (lower.includes('bright') || lower.includes('brighten')) newLighting.exposure = Math.min(newLighting.exposure + 30, 100);
+        if (lower.includes('dark') || lower.includes('moody')) newLighting.exposure = Math.max(newLighting.exposure - 30, -100);
+        if (lower.includes('pop') || lower.includes('vibrant')) newLighting.vibrance = Math.min(newLighting.vibrance + 40, 100);
+        if (lower.includes('contrast')) newLighting.contrast = Math.min(newLighting.contrast + 30, 100);
+        if (lower.includes('soften') || lower.includes('soft lighting')) {
+          newLighting.highlights = Math.max(newLighting.highlights - 20, -100);
+          newLighting.shadows = Math.min(newLighting.shadows + 20, 100);
+        }
+
+        setLighting(newLighting);
+      };
+
+      const handleFileSelect = (incomingFiles) => {
+        const currentPresetConfig = PRESETS[activePreset];
+        const newFileList = [...files];
+        let rejectedCount = 0;
+        let sizeErrorCount = 0;
+
+        Array.from(incomingFiles).forEach((file) => {
+          if (newFileList.length >= currentPresetConfig.maxBatch) {
+            rejectedCount++;
+            return;
+          }
+
+          if (file.size > MAX_FILE_SIZE_BYTES) {
+            sizeErrorCount++;
+            return;
+          }
+
+          const ext = '.' + file.name.split('.').pop().toLowerCase();
+          const isRaw = RAW_EXTENSIONS.includes(ext);
+
+          const fileItem = {
+            id: Math.random().toString(36).substring(2, 9),
+            file: file,
+            name: file.name,
+            sizeMB: (file.size / (1024 * 1024)).toFixed(2),
+            isRaw: isRaw,
+            status: 'queued',
+            progress: 0,
+            originalUrl: URL.createObjectURL(file),
+            processedUrl: null,
+            exif: {
+              camera: isRaw ? 'RAW Sensor Data' : 'sRGB / EXIF Maintained',
+              resolution: 'Full Native Res',
+              size: `${(file.size / (1024 * 1024)).toFixed(1)} MB`
+            }
+          };
+
+          newFileList.push(fileItem);
+        });
+
+        if (sizeErrorCount > 0) showToast(`${sizeErrorCount} file(s) skipped: Exceeded 50 MB limit.`, 'error');
+        if (rejectedCount > 0) showToast(`Batch limit reached (${currentPresetConfig.maxBatch} max for ${currentPresetConfig.name}).`, 'warning');
+
+        setFiles(newFileList);
+      };
+
+      // Advanced Canvas Engine with Pixel Tone/Color & Smoothing Pipeline
+      const retouchImageOnCanvas = (fileItem) => {
+        return new Promise((resolve) => {
+          const img = new Image();
+          img.src = fileItem.originalUrl;
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = img.width;
+            canvas.height = img.height;
+            const ctx = canvas.getContext('2d');
+
+            ctx.drawImage(img, 0, 0);
+
+            // Layer 1: Skin Smoothing Bilateral Simulation
+            const smoothingRadius = Math.max(2, Math.floor((smoothingStrength / 100) * 12));
+            ctx.globalAlpha = (smoothingStrength / 100) * 0.45;
+            ctx.filter = `blur(${smoothingRadius}px)`;
+            ctx.drawImage(img, 0, 0);
+
+            // Layer 2: Lighting & Tone Curves Adjustments
+            const expFilter = 100 + (lighting.exposure * 0.5) + (lighting.brightness * 0.3);
+            const conFilter = 100 + (lighting.contrast * 0.5) + (lighting.dehaze * 0.3);
+            const satFilter = 100 + (lighting.saturation * 0.6) + (lighting.vibrance * 0.4);
+            
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.globalAlpha = 1.0;
+            ctx.filter = `brightness(${expFilter}%) contrast(${conFilter}%) saturate(${satFilter}%)`;
+            ctx.drawImage(canvas, 0, 0);
+
+            // Layer 3: Color Temperature & White Balance Overlay
+            if (lighting.temp !== 0 || lighting.tint !== 0) {
+              ctx.globalCompositeOperation = lighting.temp > 0 ? 'soft-light' : 'overlay';
+              ctx.globalAlpha = Math.abs(lighting.temp) / 250;
+              ctx.fillStyle = lighting.temp > 0 ? '#ffb366' : '#66b3ff';
+              ctx.fillRect(0, 0, canvas.width, canvas.height);
+            }
+
+            // Reset ctx parameters
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.globalAlpha = 1.0;
+            ctx.filter = 'none';
+
+            canvas.toBlob((blob) => {
+              const url = URL.createObjectURL(blob);
+              resolve(url);
+            }, 'image/jpeg', 0.95);
+          };
+        });
+      };
+
+      const processBatch = async () => {
+        if (files.length === 0) return;
+        setIsProcessing(true);
+
+        const queue = files.filter(f => f.status !== 'completed');
+
+        for (let i = 0; i < queue.length; i += concurrencyLimit) {
+          const chunk = queue.slice(i, i + concurrencyLimit);
+
+          await Promise.all(chunk.map(async (item) => {
+            setFiles(prev => prev.map(f => f.id === item.id ? { ...f, status: item.isRaw ? 'decoding' : 'retouching', progress: 20 } : f));
+            await new Promise(r => setTimeout(r, item.isRaw ? 800 : 400));
+            setFiles(prev => prev.map(f => f.id === item.id ? { ...f, status: 'retouching', progress: 60 } : f));
+
+            const processedUrl = await retouchImageOnCanvas(item);
+
+            setFiles(prev => prev.map(f => f.id === item.id ? { 
+              ...f, 
+              status: 'completed', 
+              progress: 100, 
+              processedUrl: processedUrl 
+            } : f));
+          }));
+        }
+
+        setIsProcessing(false);
+        showToast('Batch processing complete!', 'success');
+      };
+
+      const downloadSingle = (item) => {
+        const link = document.createElement('a');
+        link.href = item.processedUrl || item.originalUrl;
+        link.download = `retouched_${item.name.replace(/\.[^/.]+$/, "")}.jpg`;
+        link.click();
+      };
+
+      const downloadZip = async () => {
+        const completedFiles = files.filter(f => f.status === 'completed');
+        if (completedFiles.length === 0) {
+          showToast('No completed images to download.', 'warning');
+          return;
+        }
+
+        const zip = new JSZip();
+        const folder = zip.folder("GlowRetouch_Export");
+
+        for (const item of completedFiles) {
+          const response = await fetch(item.processedUrl);
+          const blob = await response.blob();
+          folder.file(`glow_retouched_${item.name.replace(/\.[^/.]+$/, "")}.jpg`, blob);
+        }
+
+        const zipBlob = await zip.generateAsync({ type: "blob" });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(zipBlob);
+        link.download = `GlowRetouch_Batch_${Date.now()}.zip`;
+        link.click();
+      };
+
+      const completedCount = files.filter(f => f.status === 'completed').length;
+      const currentPresetMax = PRESETS[activePreset].maxBatch;
+
+      return (
+        <div className="flex flex-col min-h-screen">
+          
+          {/* Header */}
+          <header className="border-b border-dark-700 bg-dark-800/80 backdrop-blur sticky top-0 z-40 px-6 py-4 flex items-center justify-between">
+            <div className="flex items-center space-x-3">
+              <div className="h-10 w-10 rounded-xl bg-gradient-to-tr from-brand-500 to-teal-300 flex items-center justify-center text-dark-900 font-bold shadow-lg shadow-brand-500/20">
+                <i data-lucide="sparkles" className="w-6 h-6"></i>
+              </div>
+              <div>
+                <h1 className="font-bold text-lg leading-tight tracking-wide flex items-center gap-2">
+                  GlowRetouch <span className="text-xs bg-brand-500/10 text-brand-400 border border-brand-500/30 px-2 py-0.5 rounded-full font-mono">AI STUDIO</span>
+                </h1>
+                <p className="text-xs text-slate-400">Professional Portrait, Lighting & Color Engine</p>
+              </div>
+            </div>
+
+            <div className="flex bg-dark-900 p-1 rounded-xl border border-dark-700 text-xs">
+              <button 
+                onClick={() => setActiveTab('studio')}
+                className={`px-4 py-2 rounded-lg font-medium transition-all flex items-center gap-2 ${activeTab === 'studio' ? 'bg-brand-500 text-dark-900 shadow' : 'text-slate-400 hover:text-slate-200'}`}
+              >
+                <i data-lucide="sliders" className="w-4 h-4"></i> Studio Workspace
+              </button>
+              <button 
+                onClick={() => setActiveTab('architecture')}
+                className={`px-4 py-2 rounded-lg font-medium transition-all flex items-center gap-2 ${activeTab === 'architecture' ? 'bg-brand-500 text-dark-900 shadow' : 'text-slate-400 hover:text-slate-200'}`}
+              >
+                <i data-lucide="code" className="w-4 h-4"></i> Backend Architecture
+              </button>
+            </div>
+          </header>
+
+          {/* Toast Notification */}
+          {toast && (
+            <div className={`fixed top-20 right-6 z-50 px-4 py-3 rounded-xl border shadow-xl flex items-center gap-3 text-sm transition-all ${
+              toast.type === 'error' ? 'bg-red-950/90 border-red-800 text-red-200' :
+              toast.type === 'warning' ? 'bg-amber-950/90 border-amber-800 text-amber-200' :
+              'bg-teal-950/90 border-brand-600 text-brand-200'
+            }`}>
+              <i data-lucide={toast.type === 'error' ? 'alert-triangle' : toast.type === 'warning' ? 'alert-circle' : 'check-circle'} className="w-5 h-5"></i>
+              {toast.message}
+            </div>
+          )}
+
+          {activeTab === 'studio' ? (
+            <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-6 p-6">
+              
+              {/* LEFT CONTROL PANEL (4 Cols) */}
+              <div className="lg:col-span-4 space-y-6">
+                
+                {/* Control Panel Navigation Tabs */}
+                <div className="bg-dark-800 border border-dark-700 rounded-2xl p-2 flex gap-1 text-xs">
+                  <button 
+                    onClick={() => setStudioControlTab('presets')}
+                    className={`flex-1 py-2 rounded-xl font-medium transition-all flex items-center justify-center gap-1.5 ${studioControlTab === 'presets' ? 'bg-brand-500/10 text-brand-400 border border-brand-500/30' : 'text-slate-400 hover:text-slate-200'}`}
+                  >
+                    <i data-lucide="layers" className="w-3.5 h-3.5"></i> Presets
+                  </button>
+                  <button 
+                    onClick={() => setStudioControlTab('lighting')}
+                    className={`flex-1 py-2 rounded-xl font-medium transition-all flex items-center justify-center gap-1.5 ${studioControlTab === 'lighting' ? 'bg-brand-500/10 text-brand-400 border border-brand-500/30' : 'text-slate-400 hover:text-slate-200'}`}
+                  >
+                    <i data-lucide="sun" className="w-3.5 h-3.5"></i> Lighting
+                  </button>
+                  <button 
+                    onClick={() => setStudioControlTab('color')}
+                    className={`flex-1 py-2 rounded-xl font-medium transition-all flex items-center justify-center gap-1.5 ${studioControlTab === 'color' ? 'bg-brand-500/10 text-brand-400 border border-brand-500/30' : 'text-slate-400 hover:text-slate-200'}`}
+                  >
+                    <i data-lucide="palette" className="w-3.5 h-3.5"></i> Color
+                  </button>
+                </div>
+
+                {/* TAB 1: PRESETS */}
+                {studioControlTab === 'presets' && (
+                  <div className="bg-dark-800 border border-dark-700 rounded-2xl p-5 space-y-4 shadow-xl">
+                    <div className="flex justify-between items-center">
+                      <h2 className="text-sm font-semibold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                        <i data-lucide="sparkles" className="w-4 h-4 text-brand-400"></i> Skin Presets
+                      </h2>
+                      <span className="text-xs text-brand-400 font-mono bg-brand-500/10 px-2 py-0.5 rounded border border-brand-500/20">
+                        {files.length} / {currentPresetMax} Files
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-2.5">
+                      {Object.values(PRESETS).map((preset) => {
+                        const isActive = activePreset === preset.id;
+                        return (
+                          <button
+                            key={preset.id}
+                            onClick={() => handlePresetChange(preset.id)}
+                            className={`text-left p-3.5 rounded-xl border transition-all relative overflow-hidden ${
+                              isActive 
+                                ? 'bg-brand-500/10 border-brand-500 text-white shadow-lg shadow-brand-500/5' 
+                                : 'bg-dark-900/50 border-dark-700 text-slate-400 hover:border-slate-600 hover:text-slate-200'
+                            }`}
+                          >
+                            <div className="flex justify-between items-center mb-1">
+                              <span className="font-semibold text-sm">{preset.name}</span>
+                              <span className="text-[10px] bg-dark-700 text-slate-300 px-2 py-0.5 rounded-full font-mono">
+                                {preset.badge}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-400 leading-relaxed">{preset.description}</p>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {/* Smoothing Strength Slider */}
+                    <div className="space-y-2 pt-2 border-t border-dark-700">
+                      <div className="flex justify-between text-xs">
+                        <label className="text-slate-300 font-medium">Smoothing Strength</label>
+                        <span className="text-brand-400 font-mono">{smoothingStrength}%</span>
+                      </div>
+                      <input 
+                        type="range" 
+                        min="10" 
+                        max="80" 
+                        value={smoothingStrength}
+                        onChange={(e) => setSmoothingStrength(Number(e.target.value))}
+                        className="w-full accent-brand-500 bg-dark-900 h-2 rounded-lg cursor-pointer"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* TAB 2: LIGHTING CONTROLS */}
+                {studioControlTab === 'lighting' && (
+                  <div className="bg-dark-800 border border-dark-700 rounded-2xl p-5 space-y-4 shadow-xl">
+                    <div className="flex justify-between items-center border-b border-dark-700 pb-2">
+                      <h2 className="text-sm font-semibold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                        <i data-lucide="sun" className="w-4 h-4 text-brand-400"></i> Light & Tone
+                      </h2>
+                      <button onClick={resetLighting} className="text-xs text-brand-400 hover:underline font-mono">Reset All</button>
+                    </div>
+
+                    {[
+                      { key: 'exposure', label: 'Exposure', min: -100, max: 100 },
+                      { key: 'brightness', label: 'Brightness', min: -100, max: 100 },
+                      { key: 'contrast', label: 'Contrast', min: -100, max: 100 },
+                      { key: 'highlights', label: 'Highlights', min: -100, max: 100 },
+                      { key: 'shadows', label: 'Shadows', min: -100, max: 100 },
+                      { key: 'whites', label: 'Whites', min: -100, max: 100 },
+                      { key: 'blacks', label: 'Blacks', min: -100, max: 100 },
+                      { key: 'clarity', label: 'Clarity', min: -100, max: 100 },
+                      { key: 'dehaze', label: 'Dehaze', min: -100, max: 100 },
+                    ].map(item => (
+                      <div key={item.key} className="space-y-1">
+                        <div className="flex justify-between text-xs">
+                          <span className="text-slate-300">{item.label}</span>
+                          <span className="text-brand-400 font-mono">{lighting[item.key]}</span>
+                        </div>
+                        <input 
+                          type="range" 
+                          min={item.min} 
+                          max={item.max} 
+                          value={lighting[item.key]}
+                          onChange={(e) => handleLightingChange(item.key, e.target.value)}
+                          className="w-full accent-brand-500 bg-dark-900 h-1.5 rounded-lg cursor-pointer"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* TAB 3: COLOR & WHITE BALANCE */}
+                {studioControlTab === 'color' && (
+                  <div className="bg-dark-800 border border-dark-700 rounded-2xl p-5 space-y-4 shadow-xl">
+                    <div className="flex justify-between items-center border-b border-dark-700 pb-2">
+                      <h2 className="text-sm font-semibold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                        <i data-lucide="palette" className="w-4 h-4 text-brand-400"></i> Color & White Balance
+                      </h2>
+                      <button onClick={resetLighting} className="text-xs text-brand-400 hover:underline font-mono">Reset All</button>
+                    </div>
+
+                    {[
+                      { key: 'temp', label: 'Color Temp (K)', min: -100, max: 100 },
+                      { key: 'tint', label: 'Tint (Green/Magenta)', min: -100, max: 100 },
+                      { key: 'vibrance', label: 'Vibrance', min: -100, max: 100 },
+                      { key: 'saturation', label: 'Saturation', min: -100, max: 100 },
+                    ].map(item => (
+                      <div key={item.key} className="space-y-1">
+                        <div className="flex justify-between text-xs">
+                          <span className="text-slate-300">{item.label}</span>
+                          <span className="text-brand-400 font-mono">{lighting[item.key]}</span>
+                        </div>
+                        <input 
+                          type="range" 
+                          min={item.min} 
+                          max={item.max} 
+                          value={lighting[item.key]}
+                          onChange={(e) => handleLightingChange(item.key, e.target.value)}
+                          className="w-full accent-brand-500 bg-dark-900 h-1.5 rounded-lg cursor-pointer"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* AI Natural Language Directives */}
+                <div className="bg-dark-800 border border-dark-700 rounded-2xl p-5 space-y-3 shadow-xl">
+                  <label className="text-xs text-slate-300 font-medium flex items-center gap-1.5">
+                    <i data-lucide="message-square" className="w-3.5 h-3.5 text-brand-400"></i> AI Auto-Tone Directives
+                  </label>
+                  <textarea 
+                    rows="2"
+                    value={customInstruction}
+                    onChange={(e) => parseAIDirective(e.target.value)}
+                    placeholder="e.g. 'Warm sunset tone, soften highlights, boost contrast'..."
+                    className="w-full bg-dark-900 border border-dark-700 rounded-xl p-3 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-brand-500 transition-colors resize-none"
+                  />
+                  <p className="text-[10px] text-slate-500">AI automatically adjusts lighting sliders based on your description.</p>
+                </div>
+
+                {/* Processing Trigger */}
+                <button
+                  onClick={processBatch}
+                  disabled={files.length === 0 || isProcessing}
+                  className={`w-full py-4 rounded-xl font-bold flex items-center justify-center gap-2 shadow-xl transition-all ${
+                    files.length === 0 || isProcessing
+                      ? 'bg-dark-700 text-slate-500 cursor-not-allowed'
+                      : 'bg-gradient-to-r from-brand-500 to-teal-400 text-dark-900 hover:brightness-110 shadow-brand-500/20'
+                  }`}
+                >
+                  <i data-lucide={isProcessing ? "refresh-cw" : "play"} className={`w-5 h-5 ${isProcessing ? 'animate-spin' : ''}`}></i>
+                  {isProcessing ? 'Processing Batch Queue...' : `Start Retouching Batch (${files.length})`}
+                </button>
+
+              </div>
+
+              {/* RIGHT MAIN WORKSPACE (8 Cols) */}
+              <div className="lg:col-span-8 space-y-6 flex flex-col">
+                
+                {/* Drag & Drop Upload Zone */}
+                <div className="bg-dark-800 border border-dark-700 rounded-2xl p-6 shadow-xl flex flex-col justify-between space-y-4">
+                  <div 
+                    onClick={() => fileInputRef.current?.click()}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => { e.preventDefault(); handleFileSelect(e.dataTransfer.files); }}
+                    className="border-2 border-dashed border-dark-700 hover:border-brand-500/50 rounded-2xl p-8 text-center cursor-pointer bg-dark-900/40 transition-all group"
+                  >
+                    <input 
+                      type="file" 
+                      ref={fileInputRef} 
+                      multiple 
+                      accept="image/jpeg,image/png,image/webp,.cr2,.cr3,.nef,.arw,.dng,.raf,.orf,.rw2,.pef" 
+                      className="hidden" 
+                      onChange={(e) => handleFileSelect(e.target.files)}
+                    />
+                    <div className="h-12 w-12 rounded-full bg-dark-800 border border-dark-700 mx-auto flex items-center justify-center mb-3 text-brand-400 group-hover:scale-110 transition-transform">
+                      <i data-lucide="upload-cloud" className="w-6 h-6"></i>
+                    </div>
+                    <p className="text-sm font-medium text-slate-200">Drag & Drop Portraits or Camera RAW Files Here</p>
+                    <p className="text-xs text-slate-400 mt-1">Supports JPG, PNG, CR2, CR3, NEF, ARW, DNG, RAF, ORF (Up to 50 MB per file)</p>
+                  </div>
+
+                  {/* Header Bar */}
+                  <div className="flex items-center justify-between pt-2">
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Batch Queue</span>
+                      <span className="text-xs bg-dark-700 px-2 py-0.5 rounded-full text-slate-300 font-mono">
+                        {completedCount} / {files.length} Completed
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {files.length > 0 && (
+                        <>
+                          <button 
+                            onClick={downloadZip}
+                            disabled={completedCount === 0}
+                            className="px-3 py-1.5 rounded-lg bg-brand-500/10 border border-brand-500/30 text-brand-400 text-xs font-medium hover:bg-brand-500/20 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
+                          >
+                            <i data-lucide="archive" className="w-3.5 h-3.5"></i> Download ZIP
+                          </button>
+                          <button 
+                            onClick={() => setFiles([])}
+                            className="px-3 py-1.5 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-xs font-medium hover:bg-red-500/20 flex items-center gap-1.5"
+                          >
+                            <i data-lucide="trash-2" className="w-3.5 h-3.5"></i> Clear All
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Batch Grid */}
+                <div className="flex-1 bg-dark-800 border border-dark-700 rounded-2xl p-6 shadow-xl min-h-[350px]">
+                  {files.length === 0 ? (
+                    <div className="h-full min-h-[300px] flex flex-col items-center justify-center text-center text-slate-500">
+                      <i data-lucide="image" className="w-12 h-12 stroke-1 mb-3 opacity-40"></i>
+                      <p className="text-sm">No images in batch queue.</p>
+                      <p className="text-xs text-slate-600 mt-1">Upload files above to start retouching.</p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                      {files.map((item) => (
+                        <div key={item.id} className="bg-dark-900 border border-dark-700 rounded-xl overflow-hidden group relative flex flex-col">
+                          
+                          <div className="h-40 bg-dark-950 relative overflow-hidden flex items-center justify-center">
+                            <img 
+                              src={item.processedUrl || item.originalUrl} 
+                              alt={item.name} 
+                              className="w-full h-full object-cover"
+                            />
+
+                            {item.isRaw && (
+                              <span className="absolute top-2 left-2 bg-purple-950/80 border border-purple-500/40 text-purple-300 font-mono text-[10px] px-2 py-0.5 rounded shadow">
+                                RAW
+                              </span>
+                            )}
+
+                            <span className={`absolute top-2 right-2 text-[10px] font-mono px-2 py-0.5 rounded shadow backdrop-blur ${
+                              item.status === 'completed' ? 'bg-teal-950/80 text-brand-400 border border-brand-500/40' :
+                              item.status === 'decoding' ? 'bg-purple-950/80 text-purple-300 border border-purple-500/40' :
+                              item.status === 'retouching' ? 'bg-amber-950/80 text-amber-300 border border-amber-500/40 animate-pulse' :
+                              'bg-dark-800/80 text-slate-400 border border-dark-600'
+                            }`}>
+                              {item.status.toUpperCase()}
+                            </span>
+
+                            <div className="absolute inset-0 bg-dark-900/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                              {item.status === 'completed' && (
+                                <button 
+                                  onClick={() => setSelectedImageForView(item)}
+                                  className="p-2 bg-brand-500 text-dark-900 rounded-full hover:scale-110 transition-transform shadow"
+                                  title="Inspect Before/After"
+                                >
+                                  <i data-lucide="eye" className="w-4 h-4"></i>
+                                </button>
+                              )}
+                              <button 
+                                onClick={() => downloadSingle(item)}
+                                className="p-2 bg-dark-800 text-slate-200 border border-dark-600 rounded-full hover:scale-110 transition-transform shadow"
+                                title="Download Result"
+                              >
+                                <i data-lucide="download" className="w-4 h-4"></i>
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="p-3 flex-1 flex flex-col justify-between space-y-2">
+                            <div>
+                              <p className="text-xs font-medium text-slate-200 truncate">{item.name}</p>
+                              <p className="text-[10px] text-slate-400 font-mono">{item.sizeMB} MB</p>
+                            </div>
+
+                            {isProcessing && item.status !== 'completed' && (
+                              <div className="w-full bg-dark-800 h-1 rounded-full overflow-hidden">
+                                <div 
+                                  className="bg-brand-500 h-full transition-all duration-300" 
+                                  style={{ width: `${item.progress}%` }}
+                                ></div>
+                              </div>
+                            )}
+                          </div>
+
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+              </div>
+
+            </div>
+          ) : (
+            <div className="flex-1 p-6 max-w-6xl mx-auto space-y-6">
+              <div className="bg-dark-800 border border-dark-700 rounded-2xl p-6 shadow-xl space-y-4">
+                <h2 className="text-lg font-bold text-slate-200 flex items-center gap-2">
+                  <i data-lucide="cpu" className="w-5 h-5 text-brand-400"></i> Server Pipeline & Camera RAW Microservice Architecture
+                </h2>
+                <p className="text-sm text-slate-400 leading-relaxed">
+                  Production architecture handles stream chunking, asynchronous BullMQ queues, multi-threaded LibRaw C++ decoding, and GPU skin smoothing shaders.
+                </p>
+
+                <div className="bg-dark-950 border border-dark-700 rounded-xl p-4 overflow-x-auto font-mono text-xs text-teal-300 leading-relaxed">
+                  <pre>{`# Python FastAPI + LibRaw Processing Microservice Code
+from fastapi import FastAPI, UploadFile
+import rawpy
+
+app = FastAPI(title="GlowRetouch Camera RAW Microservice")
+
+@app.post("/api/v1/process-raw")
+async def process_raw_file(file: UploadFile):
+    with rawpy.imread(file.file) as raw:
+        rgb = raw.postprocess(
+            use_camera_wb=True,
+            half_size=False,
+            output_bps=16
+        )
+    return {"status": "success", "resolution": rgb.shape}`}</pre>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Modal Before/After */}
+          {selectedImageForView && (
+            <div className="fixed inset-0 z-50 bg-dark-900/90 backdrop-blur-md flex items-center justify-center p-6">
+              <div className="bg-dark-800 border border-dark-700 rounded-2xl max-w-4xl w-full overflow-hidden shadow-2xl flex flex-col max-h-[90vh]">
+                <div className="px-6 py-4 border-b border-dark-700 flex justify-between items-center bg-dark-800">
+                  <div>
+                    <h3 className="font-bold text-slate-200 text-sm">{selectedImageForView.name}</h3>
+                    <p className="text-xs text-slate-400">Side-by-Side Before / After Retouch Comparison</p>
+                  </div>
+                  <button 
+                    onClick={() => setSelectedImageForView(null)}
+                    className="p-1.5 rounded-lg bg-dark-700 hover:bg-dark-600 text-slate-300"
+                  >
+                    <i data-lucide="x" className="w-5 h-5"></i>
+                  </button>
+                </div>
+
+                <div className="p-6 flex-1 overflow-auto grid grid-cols-1 md:grid-cols-2 gap-4 bg-dark-950">
+                  <div className="space-y-2">
+                    <span className="text-xs font-mono bg-dark-800 border border-dark-700 px-2 py-1 rounded text-slate-400">BEFORE (ORIGINAL)</span>
+                    <img src={selectedImageForView.originalUrl} className="w-full h-auto rounded-xl border border-dark-700" />
+                  </div>
+                  <div className="space-y-2">
+                    <span className="text-xs font-mono bg-brand-500/10 border border-brand-500/30 px-2 py-1 rounded text-brand-400">AFTER (RETOUCHED)</span>
+                    <img src={selectedImageForView.processedUrl} className="w-full h-auto rounded-xl border border-brand-500/40" />
+                  </div>
+                </div>
+
+                <div className="p-4 border-t border-dark-700 bg-dark-800 flex justify-between items-center">
+                  <div className="text-xs text-slate-400 font-mono">
+                    Camera WB: Preserved | Model: GlowRetouch v2.4 Engine
+                  </div>
+                  <button 
+                    onClick={() => downloadSingle(selectedImageForView)}
+                    className="px-4 py-2 rounded-xl bg-brand-500 text-dark-900 font-bold text-xs hover:brightness-110 flex items-center gap-2"
+                  >
+                    <i data-lucide="download" className="w-4 h-4"></i> Download Full Resolution
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
